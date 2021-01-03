@@ -1,0 +1,525 @@
+---
+title: "Reproduce simulations and plots"
+author:
+  - Bénédicte Colnet^[Inria, benedicte.colnet@inria.fr] and Imke Mayer^[EHESS, imke.mayer@ehess.fr]
+  - Other contributors[^1]
+date: "October 2020"
+output:
+  html_document:
+    number_sections: no
+    toc: yes
+    toc_depth: 2
+  pdf_document:
+    toc: yes
+abstract: | 
+  This notebook allows to reproduce the simulations and plots presented in the review **Causal inference methods for combining randomizedtrials and observational studies: a review**. Note that this notebook does not reproduce the Calibration Weighting results as the paper and package (coming, and called genRCT) from Lin Dong is under review.
+---
+[^1]: Others contributors to this notebook through reviewing or active discussions: Julie Josse, Gael Varoquaux, Jean-Philippe Vert, Shu Yang.
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, verbose = FALSE, warning = FALSE, message=FALSE, cache = TRUE)
+
+# Clear any existing variables
+rm(list = ls())
+
+# Set seed for reproducibility
+set.seed(1234)
+
+# Load implemented functions
+source('./estimators_and_simulations-wo-cw.R')
+```
+
+
+```{r}
+# Libraries
+library(ggplot2) # plots
+library(dplyr) # data frame re arrangment
+library(table1) # table for baseline
+library(wesanderson) # colors
+
+# number of repetitions in simulation
+repetitions = 100 #(Choose 100 to reproduce exact plots of the publication, except for CW)
+
+```
+
+
+# Distributional shift
+
+```{r}
+one_simulation <- simulate_continuous(n = 1000, m = 10000)
+ 
+one_simulation$sample <- ifelse(one_simulation$V == 1, "RCT", "Observational")
+baseline <- table1(~ X1 + X2 + X3 + X4 | sample, data = one_simulation, overall="Total")
+
+library(xtable)
+```
+
+
+```{r}
+ggplot(one_simulation, aes(x = X1, group = sample, fill = sample)) +
+    geom_histogram(binwidth = 0.2, alpha=0.4, position="dodge") + 
+        scale_fill_manual(values=c("darkorchid4", "darkorange1")) +
+    theme_classic() +
+    theme(legend.title = element_blank(), legend.position = "bottom", 
+          legend.box = "horizontal", legend.text = element_text(size=13, 
+                                     face="bold")) +
+  ylab("") +  # no title in legend
+     theme(axis.text = element_text(vjust = 0.5, hjust=1, size=14, face="bold"),
+           axis.title.x = element_text(size=18, face="bold")) +
+  ggsave("./X1shift.pdf")
+```
+
+
+# Standard simulation
+
+```{r}
+results <- compute_estimators_and_store(rep = repetitions, n = 1000, m = 10000)
+```
+
+
+```{r}
+ggplot(data = melt(results), aes(x = variable, y = value)) + 
+    geom_boxplot(aes(fill=variable)) +
+    theme_bw() +
+    geom_hline(aes(yintercept = 27.4, color = "Population ATE"), 
+               size = 0.6, linetype="dashed") +
+    xlab("") +
+    ylab("Estimated ATE")  +
+    theme(legend.title = element_blank(), 
+          legend.text = element_text(size=14)) +  
+    theme(axis.text = element_text(angle = 0, vjust = 0.5, 
+                                   hjust=1, size=14)) +          
+    scale_fill_brewer(palette = "Accent") +
+    coord_flip() + 
+  ggsave("./sim-simple-100.pdf")
+
+```
+
+
+# Systematic analysis
+
+```{r}
+RCT_param <- c("correct", "strongbias", "exponential")
+Outcome_param <- c("correct", "wrong")
+
+total_results <- compute_estimators_and_store(rep = repetitions)
+total_results$n = 1000
+total_results$m = 49000
+total_results$param_RCT = "correct"
+total_results$outcome = "correct"
+
+for (m in c(10000)){
+  for (rct_param in RCT_param){
+      for (outcome_param in Outcome_param){
+        results <- compute_estimators_and_store(rep = repetitions, 
+                                                n = 1000, m = m, 
+                                                misRCT = rct_param, 
+                                                misoutcome = outcome_param)
+        results$n <- rep(1000, nrow(results))
+        results$m <- rep(m, nrow(results))
+        results$param_RCT <- rep(rct_param, nrow(results))
+        results$outcome <- rep(outcome_param, nrow(results))
+        total_results <- rbind(total_results, results)
+      }
+  }
+}
+
+data <- total_results[2:nrow(total_results),]
+```
+
+
+```{r}
+data$relative.size <- ifelse(data$m == 10000, "10%", "other")
+
+data_bis <- data
+colnames(data_bis)[colnames(data_bis) == 'AIPSW'] <- 'AIPSW (Doubly-robust)'
+
+DF <- melt(data_bis , 
+           id.vars = c("param_RCT", "outcome", "relative.size"), 
+           measure.vars = c("RCT", "IPSW", "IPSW.norm",
+                            "Stratification.n.10", "G.formula", 
+                            "AIPSW (Doubly-robust)"))
+
+DF$param_RCT <- ifelse(DF$param_RCT == "correct", 
+                       "1. RCT with weak shift", 
+                       ifelse(DF$param_RCT == "exponential", 
+                              "RCT mis-specification", 
+                              "2. RCT with strong shift"))
+
+DF$outcome <- ifelse(DF$outcome == "correct", "Correct Y", "Mis-specified Y")
+
+```
+
+
+```{r}
+ggplot(data = DF[DF$relative.size == "10%" & DF$param_RCT != "2. RCT with strong shift",], 
+       aes(x = variable, y = value)) +
+    geom_boxplot(aes(fill=variable)) +
+    facet_grid(outcome~param_RCT) +
+    theme_bw() +
+    geom_hline(aes(yintercept = 27.4, color = "ATE"), size = 0.6, linetype="dashed") +
+    xlab("") +
+    ylab("Estimated ATE")  +
+    theme(legend.title = element_blank(), 
+          legend.position="bottom", legend.box = "horizontal") +  # no title in legend
+    theme(axis.text = element_text(angle = 45, vjust = 0.5, hjust=1, size=10)) + 
+  scale_fill_brewer(palette = "Accent") +
+  ggsave("./sim-RCT-outcome-mis.pdf")
+
+```
+
+```{r}
+data$relative.size <- ifelse(data$m == 10000, "10%", "other")
+
+DF <- melt(data, id.vars = c("param_RCT", "outcome", "relative.size"),
+           measure.vars = c("RCT", "IPSW", "IPSW.norm",
+                            "Stratification.n.10", "G.formula", "AIPSW"))
+
+DF$param_RCT <- ifelse(DF$param_RCT == "correct", 
+                       "Shift: Weak", 
+                       ifelse(DF$param_RCT == "exponential", 
+                              "RCT mis-specification", 
+                              "Shift: Strong"))
+DF$outcome <- ifelse(DF$outcome == "correct", "Correct Y", "Mis-specified Y")
+
+
+
+ggplot(data = DF[DF$relative.size == "10%" & 
+                   DF$param_RCT !="RCT mis-specification"& 
+                   DF$outcome == "Correct Y",], 
+       aes(x = variable, y = value)) +
+     geom_boxplot(aes(fill=variable)) +
+     facet_wrap(~param_RCT) +
+#     #geom_jitter(alpha = 0.2, size = 0.2, width = 0.2)  +
+    theme_bw() +
+    geom_hline(aes(yintercept = 27.4, color = "Population ATE"), size = 0.6, linetype="dashed") +
+    xlab("") +
+    ylab("Estimated ATE")  +
+    theme(legend.title = element_blank(), 
+          legend.text = element_text(size=9), legend.position="bottom") +
+     theme(axis.text = element_text(angle = 0, vjust = 0.5, hjust=1, size=14)) +
+            scale_fill_brewer(palette = "Accent") +
+    coord_flip() +
+  theme(strip.background=element_rect(fill=NA, color=NA),
+        strip.text=element_text(size=15, face = "bold")) +
+  ggsave("./sim-strong-shift.pdf")
+```
+
+
+
+
+```{r}
+one_shifted_simulation <- simulate_continuous(n = 1000, m = 10000, misRCT = "strongbias")
+one_shifted_simulation $sample <- ifelse(one_shifted_simulation $V == 1, "RCT", "Observational")
+```
+
+```{r}
+one_shifted_simulation$Shift <- rep("Shift: Strong", nrow(one_shifted_simulation))
+one_simulation$Shift <- rep("Shift: Weak", nrow(one_simulation))
+
+shift_comparison <- rbind(one_simulation, one_shifted_simulation)
+
+ggplot(shift_comparison, aes(x = X1, group = sample, fill = sample)) +
+    #geom_histogram(binwidth = 0.2, alpha=0.4, position="dodge") + 
+    geom_density(alpha=0.4, position="dodge") +
+    scale_fill_manual(values=c("darkorchid4", "darkorange1")) +
+    theme_classic() +
+    theme(legend.title = element_blank(), 
+          legend.position = "bottom", 
+          legend.box = "horizontal", 
+          legend.text = element_text(size=18, face="bold")) +
+     ylab("") + 
+     theme(axis.text = element_text(vjust = 0.5, hjust=1, size=14, face="bold"), axis.title.x = element_text(size=18, face="bold")) +
+  facet_grid(~Shift)  +
+  theme(strip.background=element_rect(fill=NA, color=NA),
+        strip.text=element_text(size=25, face = "bold")) +
+  ggsave("./X1strongshift.pdf")
+```
+
+# Strata effect
+
+```{r}
+RCT <- c()
+Stratification.n.3 <- c()
+Stratification.n.5 <- c()
+Stratification.n.7 <- c()
+Stratification.n.9 <- c()
+Stratification.n.11 <- c()
+Stratification.n.13 <- c()
+Stratification.n.15 <- c()
+for (i in 1:repetitions){
+  DF <- simulate_continuous(n = 1000, m = 10000)
+  RCT <- c(RCT, compute_mean_diff_RCT(DF))
+  Stratification.n.3 <- c(Stratification.n.3, compute_stratification(DF, nb_strat = 3))
+  Stratification.n.5 <- c(Stratification.n.5, compute_stratification(DF, nb_strat = 5))
+  Stratification.n.7 <- c(Stratification.n.7, compute_stratification(DF, nb_strat = 7))
+  Stratification.n.9 <- c(Stratification.n.9, compute_stratification(DF, nb_strat = 9))
+  Stratification.n.11 <- c(Stratification.n.11, compute_stratification(DF, nb_strat = 11))
+  Stratification.n.13 <- c(Stratification.n.13, compute_stratification(DF, nb_strat = 13))
+  Stratification.n.15 <- c(Stratification.n.15, compute_stratification(DF, nb_strat = 15))
+}
+
+results_strata <- data.frame(RCT, Stratification.n.3, 
+                             Stratification.n.5, Stratification.n.7,
+                             Stratification.n.9,Stratification.n.11,
+                             Stratification.n.13, Stratification.n.15)
+
+
+
+
+```
+
+
+```{r}
+DF <- melt(results_strata, 
+           measure.vars = c("RCT", "Stratification.n.3", 
+                            "Stratification.n.5","Stratification.n.7", 
+                            "Stratification.n.9", "Stratification.n.11", 
+                            "Stratification.n.13", "Stratification.n.15"))
+  
+ggplot(data = DF, aes(x = variable, y = value)) +
+    geom_boxplot(aes(fill=variable)) +
+    theme_bw() +
+    geom_hline(aes(yintercept = 27.4, color = "Population ATE"), size = 0.6, linetype="dashed") +
+    xlab("") +
+    ylab("Estimated ATE")  +
+    theme(legend.title = element_blank(),
+          legend.text = element_text(size=11)) +  # no title in legend
+     theme(axis.text = element_text(angle = 0, vjust = 0.5, hjust=1, size=10, face="bold")) +
+            scale_fill_brewer(palette = "viridix") +
+  coord_flip() + ggsave("./strata-100.pdf")
+```
+
+
+
+# Focus on X1 and IPSW
+```{r}
+rct_ate <- c()
+ipsw <- c()
+ipsw_x1_only <- c()
+ipsw_wo_x1 <- c()
+gformula <- c()
+
+for (i in 1:repetitions){
+  DF <- simulate_continuous(n = 1000, m = 10000)
+  
+  # naive estimator
+  rct_ate <- c(rct_ate, 
+               mean(DF[DF$A == 1 & DF$V == 1, "Y"]) - 
+              mean(DF[DF$A == 0  & DF$V == 1, "Y"]))
+  
+  #ipsw
+  ipsw  <- c(ipsw, compute_ipsw(DF, normalized = FALSE))
+
+  #ipsw with X1 only
+  ipsw_x1_only <- c(ipsw_x1_only, compute_ipsw(DF, normalized = FALSE, covariates = "X1"))
+
+  #ipsw without X1
+  ipsw_wo_x1 <- c(ipsw_wo_x1, compute_ipsw(DF, normalized = FALSE, covariates = "-X1"))
+  
+  #gformula
+  gformula <- c(gformula, compute_gformula(DF))
+
+}
+
+results_ipsw <- data.frame("RCT" = rct_ate,
+                      "IPSW" = ipsw,
+                      "IPSW-X1" = ipsw_x1_only,
+                      "IPSW-without-X1" = ipsw_wo_x1,
+                      "G.formula" = gformula)
+```
+
+
+# Homogeneous treatment effect
+```{r}
+results_simple <- compute_estimators_and_store(rep = repetitions, misoutcome = "+a")
+```
+
+```{r}
+ggplot(data = melt(results_simple), aes(x = variable, y = value)) + 
+    geom_boxplot(aes(fill=variable)) +
+    theme_bw() +
+    geom_hline(aes(yintercept = 27.4, color = "Population ATE"), 
+               size = 0.6, linetype="dashed") +
+    xlab("") +
+    ylab("Estimated ATE")  +
+    theme(legend.title = element_blank(), legend.text = element_text(size=14)) +  
+    theme(axis.text = element_text(angle = 0, vjust = 0.5, hjust=1, size=14)) +          
+    scale_fill_brewer(palette = "Accent") +
+    coord_flip() + ggsave("./sim-homogeneous-treat.pdf")
+```
+
+Note that the same modeling can be done with a binary outcome. For binary outcomes, we generate potential outcome according to $Y(a) \mid X \sim$ Bernoulli $\left\{p_{a}(X)\right\}$ where: 
+
+$$\operatorname{logit}\left\{p_{a}(X)\right\}=1-2 X_{1}-X_{2}-X_{3}+X_{4}-3a$$
+
+
+```{r}
+# G-formula
+compute_gformula_binary <- function(DF){
+  temp <- DF
+  mu_1 <- glm(Y ~., data = temp[temp$V == 1 & temp$A == 1, !names(temp) %in% c("V", "A")], family = "binomial")
+  mu_0 <- glm(Y ~., data = temp[temp$V == 1 & temp$A == 0, !names(temp) %in% c("V", "A")], family = "binomial")
+  
+  mu_1_predict <- predict(mu_1, newdata = temp[temp$V == 0, !names(temp) %in% c("V", "A", "Y")], type="response")
+  mu_0_predict <- predict(mu_0, newdata = temp[temp$V == 0, !names(temp) %in% c("V", "A", "Y")], type="response")
+  
+  tau_hat_gformula <- mean(mu_1_predict) - mean(mu_0_predict)
+  
+  return(tau_hat_gformula)  
+}
+
+
+# simulation with binary outcome
+simulate_binary <- function(n = 1000, m = 49000, p = 4, mu = rep(1, p), Sigma = diag(p), bs = c(-0.5, -0.3, -0.5, -0.4), bs0 = -2.5, beta = c(-2, -1, -1, 1), b0 = 1, sigma = 1) {
+  
+  # Target population generation 
+  covariates <- mvrnorm(n = 50*n, mu, Sigma, tol = 1e-06, empirical = FALSE) # 50*n is roughly the initial population size necessary to have the n
+  DF <- as.data.frame(covariates)
+  names(DF) <- paste("X", 1:p, sep = "")
+  covariates_names <- names(DF)
+  
+  etas <- as.vector(covariates %*% bs + bs0)
+  ps = 1 / (1 + exp(-etas))
+  DF$ps <- ps
+  
+  # from probability to RCT indicator
+  RCT_indicator <- rbinom(length(ps), 1, as.vector(ps))
+  DF$V <- RCT_indicator 
+  
+  # random treatment assignement within the RCT
+  DF$A <- ifelse(DF$V == 1, rbinom(nrow(DF), 1, 0.5), NA)
+  
+  # keep only interesting variables
+  DF <- DF[, c(covariates_names, "A", "V")]
+  
+  # drop other data
+  DF_rct <- DF[DF$V == 1,] 
+    
+  # generate new observational data
+  covariates_rwe <- mvrnorm(n = m, mu, Sigma, tol = 1e-06, empirical = FALSE) 
+  DF_rwe <- as.data.frame(covariates_rwe)
+  names(DF_rwe) <- paste("X", 1:p, sep = "")
+  DF_rwe$V <- rep(0, m)
+  DF_rwe$A <- rep(NA, m)
+    
+ 
+  # stack RCT and RWE
+  DF <- rbind(DF_rct, DF_rwe)
+  
+  # reset row number
+  rownames(DF) <- 1:nrow(DF)
+  
+  # compute Y  
+  DF$Y = b0 + beta[1]*DF$X1 + beta[2]*DF$X2 + beta[3]*DF$X3 +
+      beta[4]*DF$X4 -3*DF$A
+  DF$Y <- 1 / (1 + exp(DF$Y))
+  Y = c()
+  for (i in 1:nrow(DF)){
+    Y = c(Y, rbinom(n = 1, size = 1, prob = DF$Y[i]))
+  }
+  DF$Y <- Y
+  return(DF)
+}
+
+rct_ate <- c()
+ipsw <- c()
+ipsw_norm <- c()
+strat_10 <- c()
+gformula <- c()
+  
+for (i in 1:50){
+    
+  DF <- simulate_binary()
+    
+  # naive estimator
+  rct_ate <- c(rct_ate, mean(DF[DF$A == 1 & DF$V == 1, "Y"]) - mean(DF[DF$A == 0  & DF$V == 1, "Y"]))
+    
+  #ispw
+  ipsw  <- c(ipsw, compute_ipsw(DF, normalized = F))
+  ipsw_norm <- c(ipsw_norm, compute_ipsw(DF, normalized = T))
+    
+  #strat
+  strat_10 <- c(strat_10, compute_stratification(DF, 10))
+    
+  #gformula
+  gformula <- c(gformula, compute_gformula_binary(DF))
+
+}
+  
+results_binary_outcome_homogeneous <- data.frame("RCT" = rct_ate,
+                      "IPSW" = ipsw,
+                      "IPSW norm" = ipsw_norm,
+                      "Stratification n=10" = strat_10,
+                      "G-formula" = gformula) 
+
+```
+
+
+
+```{r}
+ggplot(data = melt(results_binary_outcome_homogeneous), aes(x = variable, y = value)) + 
+    geom_boxplot(aes(fill=variable)) +
+    theme_bw() +
+    xlab("") +
+    ylab("Estimated ATE")  +
+    theme(legend.title = element_blank(), legend.text = element_text(size=14)) +  
+    theme(axis.text = element_text(angle = 0, vjust = 0.5, hjust=1, size=14)) +          
+    scale_fill_brewer(palette = "Accent") +
+    coord_flip() + ggsave("./sim-homogeneous-treat-binary.pdf")
+```
+
+
+# X1 effect
+
+```{r}
+rct_ate <- c()
+ipsw <- c()
+ipsw_x1_only <- c()
+ipsw_wo_x1 <- c()
+gformula <- c()
+
+for (i in 1:repetitions){
+  DF <- simulate_continuous(n = 1000, m = 10000)
+  
+  # naive estimator
+  rct_ate <- c(rct_ate, 
+               mean(DF[DF$A == 1 & DF$V == 1, "Y"]) - 
+              mean(DF[DF$A == 0  & DF$V == 1, "Y"]))
+  
+  #ipsw
+  ipsw  <- c(ipsw, compute_ipsw(DF, normalized = FALSE))
+
+  #ipsw with X1 only
+  ipsw_x1_only <- c(ipsw_x1_only, compute_ipsw(DF, normalized = FALSE, covariates = "X1"))
+
+  #ipsw without X1
+  ipsw_wo_x1 <- c(ipsw_wo_x1, compute_ipsw(DF, normalized = FALSE, covariates = "-X1"))
+  
+  #gformula
+  gformula <- c(gformula, compute_gformula(DF))
+
+}
+
+results_ipsw <- data.frame("RCT" = rct_ate,
+                      "IPSW" = ipsw,
+                      "IPSW-X1" = ipsw_x1_only,
+                      "IPSW-without-X1" = ipsw_wo_x1,
+                      "G.formula" = gformula)
+```
+
+
+```{r}
+ggplot(data = melt(results_ipsw), aes(x = variable, y = value)) + 
+    geom_boxplot(aes(fill=variable)) +
+    theme_bw() +
+    geom_hline(aes(yintercept = 27.4, color = "Population ATE"), 
+               size = 0.6, linetype="dashed") +
+    xlab("") +
+    ylab("Estimated ATE")  +
+    theme(legend.title = element_blank(), legend.text = element_text(size=14)) +  
+    theme(axis.text = element_text(angle = 0, vjust = 0.5, hjust=1, size=14)) +          
+    coord_flip() + ggsave("./X1variation.pdf")
+```
+
+
